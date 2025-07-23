@@ -3,6 +3,8 @@
 ## What's this do?
 It will show you all chat messages that took place on a particular date.  Very useful for many situations, such as "What did I do on Feb 2, 2024? Let me check."  And many many other situations.  Probably.
 
+Also since this script is for me and no one else (yet) it converts the time to CST to make it easier for me to read.  Feel free to add a Pull Request to make that configurable.
+
 ## Instructions
 
 1)  Get an Android phone with Android v13 or below

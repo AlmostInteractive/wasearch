@@ -12,8 +12,11 @@ from itertools import groupby
 from operator import itemgetter
 from urllib.parse import quote
 
+
+my_time_zone = "America/Mexico_City"
+
 try:
-    from zoneinfo import ZoneInfo
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 except ImportError:
     print("Error: 'zoneinfo' module not found.", file=sys.stderr)
     print("If you are using Python < 3.9, you may need to install the backport:", file=sys.stderr)
@@ -23,8 +26,8 @@ except ImportError:
 
 def convert_json_to_sqlite(json_file_path):
     """
-    Converts a JSON chat log to a SQLite database, correctly identifying sender names
-    and prompting for overwrite if the database already exists.
+    Converts a JSON chat log to a SQLite database.
+    It stores the original UTC timestamp without a pre-calculated local date.
     """
     db_file_path = os.path.splitext(json_file_path)[0] + '.db'
 
@@ -57,12 +60,11 @@ def convert_json_to_sqlite(json_file_path):
     cursor.execute('''
         CREATE TABLE messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT, contact_name TEXT NOT NULL,
-            timestamp TEXT NOT NULL, message_date TEXT NOT NULL, from_me BOOLEAN NOT NULL,
+            timestamp TEXT NOT NULL, from_me BOOLEAN NOT NULL,
             sender_name TEXT NOT NULL, text TEXT NOT NULL )
     ''')
-    cursor.execute('CREATE INDEX idx_message_date ON messages (message_date)')
+    cursor.execute('CREATE INDEX idx_timestamp ON messages (timestamp)')
 
-    central_tz = ZoneInfo("America/Chicago")
     message_count = 0
     for chat in data.get('chats', []):
         contact_name = chat.get('contactName')
@@ -72,21 +74,17 @@ def convert_json_to_sqlite(json_file_path):
             if message.get('type') == 'text' and 'text' in message:
                 try:
                     timestamp_str = message['timestamp']
-                    utc_dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-                    central_dt = utc_dt.astimezone(central_tz)
-                    message_date = central_dt.strftime('%Y-%m-%d')
                     from_me = message.get('fromMe', False)
                     
                     sender_name = 'Me' if from_me else (message.get('remoteResourceDisplayName') if is_group_chat else contact_name)
                     if not from_me and sender_name:
                         if '@s.whatsapp.net' in sender_name: sender_name = 'Them'
                         elif ' ' in sender_name: sender_name = sender_name.split(' ', 1)[0]
-                    elif not sender_name:
-                        sender_name = 'Unknown Sender'
+                    elif not sender_name: sender_name = 'Unknown Sender'
 
                     cursor.execute(
-                        'INSERT INTO messages (contact_name, timestamp, message_date, from_me, sender_name, text) VALUES (?, ?, ?, ?, ?, ?)',
-                        (contact_name, timestamp_str, message_date, from_me, sender_name, message['text'])
+                        'INSERT INTO messages (contact_name, timestamp, from_me, sender_name, text) VALUES (?, ?, ?, ?, ?)',
+                        (contact_name, timestamp_str, from_me, sender_name, message['text'])
                     )
                     message_count += 1
                 except (KeyError, TypeError) as e:
@@ -98,20 +96,13 @@ def convert_json_to_sqlite(json_file_path):
 
 
 def format_messages_for_display(messages, tz_info):
-    """Formats a list of messages for HTML display."""
     formatted = []
     for msg in messages:
         utc_time = datetime.fromisoformat(msg['timestamp'].replace('Z', '+00:00'))
         local_time = utc_time.astimezone(tz_info)
         time_str = local_time.strftime('%I:%M %p').lstrip('0')
-        
         safe_text = html.escape(msg['text']).replace('\n', '<br>')
-        
-        formatted.append({
-            'from_me': msg['from_me'],
-            'text': safe_text,
-            'time_str': time_str
-        })
+        formatted.append({'from_me': msg['from_me'], 'text': safe_text, 'time_str': time_str})
     return formatted
 
 
@@ -121,51 +112,63 @@ def search_chats_by_date(db_file_path, search_date_str):
         sys.exit(1)
 
     try:
+        local_tz = ZoneInfo(my_time_zone)
+        utc_tz = ZoneInfo("UTC")
         search_date_obj = datetime.strptime(search_date_str, '%Y-%m-%d')
-    except ValueError:
+    except (ValueError):
         print("Error: Invalid date format. Please use YYYY-MM-DD.", file=sys.stderr)
         sys.exit(1)
+    except ZoneInfoNotFoundError:
+        print("Error: Timezone 'America/Mexico_City' not found. Please run 'pip install tzdata'.", file=sys.stderr)
+        sys.exit(1)
+        
+    # --- Correct Time Window Calculation ---
+    # Create timezone-aware start and end datetimes in the local timezone
+    # THIS IS THE CORRECTED LINE:
+    start_local = search_date_obj.replace(tzinfo=local_tz)
+    end_local = start_local + timedelta(days=1)
     
-    prev_date_obj = search_date_obj - timedelta(days=1)
-    next_date_obj = search_date_obj + timedelta(days=1)
-    prev_date_str = prev_date_obj.strftime('%Y-%m-%d')
-    next_date_str = next_date_obj.strftime('%Y-%m-%d')
+    windows = {
+        'prev': (start_local - timedelta(days=1), start_local),
+        'current': (start_local, end_local),
+        'next': (end_local, end_local + timedelta(days=1))
+    }
+    
+    utc_windows = {
+        key: (val[0].astimezone(utc_tz).isoformat().replace('+00:00', 'Z'), 
+              val[1].astimezone(utc_tz).isoformat().replace('+00:00', 'Z'))
+        for key, val in windows.items()
+    }
 
     conn = sqlite3.connect(db_file_path)
     conn.row_factory = sqlite3.Row
-    
-    query = "SELECT * FROM messages WHERE message_date IN (?, ?, ?) ORDER BY contact_name, timestamp"
-    all_results = conn.execute(query, (prev_date_str, search_date_str, next_date_str)).fetchall()
+    query = "SELECT * FROM messages WHERE timestamp >= ? AND timestamp < ? ORDER BY contact_name, timestamp"
+    all_results = conn.execute(query, (utc_windows['prev'][0], utc_windows['next'][1])).fetchall()
     conn.close()
-
-    if not any(r['message_date'] == search_date_str for r in all_results):
+    
+    if not any(utc_windows['current'][0] <= r['timestamp'] < utc_windows['current'][1] for r in all_results):
         print(f"No messages found for {search_date_str}")
         return
 
     all_conversations = {}
     for r in all_results:
-        contact = r['contact_name']
-        msg_date = r['message_date']
+        contact, ts = r['contact_name'], r['timestamp']
         if contact not in all_conversations:
             all_conversations[contact] = {'prev': [], 'current': [], 'next': [], 'first_current_timestamp': None}
         
-        if msg_date == prev_date_str: all_conversations[contact]['prev'].append(dict(r))
-        elif msg_date == search_date_str:
+        if utc_windows['prev'][0] <= ts < utc_windows['prev'][1]: all_conversations[contact]['prev'].append(dict(r))
+        elif utc_windows['current'][0] <= ts < utc_windows['current'][1]:
             all_conversations[contact]['current'].append(dict(r))
-            if not all_conversations[contact]['first_current_timestamp']:
-                all_conversations[contact]['first_current_timestamp'] = r['timestamp']
-        elif msg_date == next_date_str: all_conversations[contact]['next'].append(dict(r))
-    
-    conversations_to_render = [
-        {'contact_name': name, **data} for name, data in all_conversations.items() if data['current']
-    ]
+            if not all_conversations[contact]['first_current_timestamp']: all_conversations[contact]['first_current_timestamp'] = ts
+        elif utc_windows['next'][0] <= ts < utc_windows['next'][1]: all_conversations[contact]['next'].append(dict(r))
+
+    conversations_to_render = [{'contact_name': name, **data} for name, data in all_conversations.items() if data['current']]
     conversations_to_render.sort(key=lambda x: x['first_current_timestamp'])
 
-    central_tz = ZoneInfo("America/Chicago")
     for conv in conversations_to_render:
-        conv['prev_messages'] = format_messages_for_display(conv['prev'], central_tz)
-        conv['current_messages'] = format_messages_for_display(conv['current'], central_tz)
-        conv['next_messages'] = format_messages_for_display(conv['next'], central_tz)
+        conv['prev_messages'] = format_messages_for_display(conv['prev'], local_tz)
+        conv['current_messages'] = format_messages_for_display(conv['current'], local_tz)
+        conv['next_messages'] = format_messages_for_display(conv['next'], local_tz)
         conv['slug'] = quote(conv['contact_name'])
 
     output_filename = f"{os.path.splitext(os.path.basename(db_file_path))[0]}_{search_date_str}.html"
@@ -193,6 +196,8 @@ def search_chats_by_date(db_file_path, search_date_str):
 
     message_template = "<div class='message {css_class}'>{text}<span class='metadata'><span class='time'>{time_str}</span></span></div>"
     
+    prev_date_obj = search_date_obj - timedelta(days=1)
+    next_date_obj = search_date_obj + timedelta(days=1)
     human_readable_prev_date = prev_date_obj.strftime('%B %d, %Y')
     human_readable_next_date = next_date_obj.strftime('%B %d, %Y')
 
@@ -202,9 +207,7 @@ def search_chats_by_date(db_file_path, search_date_str):
         curr_messages_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['current_messages']])
         next_messages_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['next_messages']])
         
-        prev_msg_id = f"prev-msg-{conv['slug']}"
-        next_msg_id = f"next-msg-{conv['slug']}"
-        
+        prev_msg_id, next_msg_id = f"prev-msg-{conv['slug']}", f"next-msg-{conv['slug']}"
         initial_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_date}</span></div>'
         prev_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_prev_date}</span></div>' if prev_messages_html else ""
         next_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_next_date}</span></div>' if next_messages_html else ""
@@ -217,24 +220,14 @@ def search_chats_by_date(db_file_path, search_date_str):
                 <span class="day-loader {'invisible' if not next_messages_html else ''}" data-target="{next_msg_id}">»</span>
             </h2>
             <div class="conversation-container">
-                <div id="{prev_msg_id}" class="collapsed">
-                    {prev_divider_html}
-                    {prev_messages_html}
-                </div>
-                {initial_divider_html}
-                {curr_messages_html}
-                <div id="{next_msg_id}" class="collapsed">
-                    {next_divider_html}
-                    {next_messages_html}
-                </div>
+                <div id="{prev_msg_id}" class="collapsed">{prev_divider_html}{prev_messages_html}</div>
+                {initial_divider_html}{curr_messages_html}
+                <div id="{next_msg_id}" class="collapsed">{next_divider_html}{next_messages_html}</div>
             </div>
         </div>"""
         conversations_html.append(conv_html)
 
-    final_html = html_template.format(
-        human_readable_date=human_readable_date, 
-        conversations_html="".join(conversations_html)
-    )
+    final_html = html_template.format(human_readable_date=human_readable_date, conversations_html="".join(conversations_html))
 
     try:
         with open(output_filename, 'w', encoding='utf-8') as f: f.write(final_html)
@@ -243,17 +236,13 @@ def search_chats_by_date(db_file_path, search_date_str):
     except IOError as e:
         print(f"Error writing to file '{output_filename}': {e}", file=sys.stderr)
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="A tool to convert and search WhatsApp chat logs.",
         epilog="Examples:\n  wasearch.py --convert ChatLog.json\n  wasearch.py ChatLog.db 2025-01-30",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
-        '-c', '--convert', dest='json_file', metavar='ChatLog.json',
-        help='Convert the specified JSON file to a SQLite DB.'
-    )
+    parser.add_argument('-c', '--convert', dest='json_file', metavar='ChatLog.json', help='Convert the specified JSON file to a SQLite DB.')
     parser.add_argument('db_file', nargs='?', help='The database file to search.')
     parser.add_argument('search_date', nargs='?', help='The date to search for (YYYY-MM-DD).')
     args = parser.parse_args()
@@ -264,7 +253,6 @@ def main():
         search_chats_by_date(args.db_file, args.search_date)
     else:
         parser.print_help()
-
 
 if __name__ == '__main__':
     main()

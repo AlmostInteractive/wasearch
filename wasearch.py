@@ -176,7 +176,7 @@ def search_chats_by_date(db_file_path, search_date_str):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,600">
     <title>Chat Logs for {human_readable_date}</title><style>
-    html,body{{font-family:"Roboto",sans-serif;margin:0;padding:0;background-color:#f0f0f0}}h1,h2{{color:#333;text-align:center;margin:20px 0}}.conversation_group{{background:#efe7dd url("https://cloud.githubusercontent.com/assets/398893/15136779/4e765036-1639-11e6-9201-67e728e86f39.jpg") repeat;padding:10px 20px;margin:20px auto;max-width:800px;border:1px solid #ccc;box-shadow:0 2px 5px rgba(0,0,0,.1);border-radius:8px}}.conversation_group h2{{color:#075e54;border-bottom:2px solid #128c7e;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}}.conversation-container{{overflow-x:hidden;padding:0 16px}}.conversation-container::after{{content:"";display:table;clear:both}}.message{{color:#000;clear:both;line-height:18px;font-size:15px;padding:8px;position:relative;margin:8px 0;max-width:85%;word-wrap:break-word;box-shadow:0 1px 1px rgba(0,0,0,.1)}}.message::after{{position:absolute;content:"";width:0;height:0;border-style:solid}}.metadata{{display:inline-block;float:right;padding:0 0 0 7px;position:relative;bottom:-4px}}.metadata .time{{color:rgba(0,0,0,.45);font-size:11px;display:inline-block}}.message.received{{background:#fff;border-radius:0 5px 5px 5px;float:left}}.message.received::after{{border-width:0 10px 10px 0;border-color:transparent #fff transparent transparent;top:0;left:-10px}}.message.sent{{background:#e1ffc7;border-radius:5px 0 5px 5px;float:right}}.message.sent::after{{border-width:0 0 10px 10px;border-color:transparent transparent transparent #e1ffc7;top:0;right:-10px}}.day-loader{{font-size:20px;font-weight:700;text-decoration:none;color:#075e54;cursor:pointer;padding:0 10px;user-select:none}}.day-loader:hover{{color:#128c7e}}.invisible{{visibility:hidden}}.collapsed{{display:none}}
+    html,body{{font-family:"Roboto",sans-serif;margin:0;padding:0;background-color:#f0f0f0}}h1,h2{{color:#333;text-align:center;margin:20px 0}}.conversation_group{{background:#efe7dd url("https://cloud.githubusercontent.com/assets/398893/15136779/4e765036-1639-11e6-9201-67e728e86f39.jpg") repeat;padding:10px 20px;margin:20px auto;max-width:800px;border:1px solid #ccc;box-shadow:0 2px 5px rgba(0,0,0,.1);border-radius:8px}}.conversation_group h2{{color:#075e54;border-bottom:2px solid #128c7e;padding-bottom:10px;display:flex;justify-content:space-between;align-items:center}}.conversation-container{{overflow-x:hidden;padding:0 16px}}.conversation-container::after{{content:"";display:table;clear:both}}.message{{color:#000;clear:both;line-height:18px;font-size:15px;padding:8px;position:relative;margin:8px 0;max-width:85%;word-wrap:break-word;box-shadow:0 1px 1px rgba(0,0,0,.1)}}.message::after{{position:absolute;content:"";width:0;height:0;border-style:solid}}.metadata{{display:inline-block;float:right;padding:0 0 0 7px;position:relative;bottom:-4px}}.metadata .time{{color:rgba(0,0,0,.45);font-size:11px;display:inline-block}}.message.received{{background:#fff;border-radius:0 5px 5px 5px;float:left}}.message.received::after{{border-width:0 10px 10px 0;border-color:transparent #fff transparent transparent;top:0;left:-10px}}.message.sent{{background:#e1ffc7;border-radius:5px 0 5px 5px;float:right}}.message.sent::after{{border-width:0 0 10px 10px;border-color:transparent transparent transparent #e1ffc7;top:0;right:-10px}}.day-loader{{font-size:20px;font-weight:700;text-decoration:none;color:#075e54;cursor:pointer;padding:0 10px;user-select:none}}.day-loader:hover{{color:#128c7e}}.invisible{{visibility:hidden}}.collapsed{{display:none}}.day-divider{{text-align:center;margin:15px 0;clear:both}}.date-label{{background:#e1f2fb;color:#5e7a8c;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600}}
     </style></head><body><h1>Chat Logs for {human_readable_date}</h1>{conversations_html}
     <script>
     document.addEventListener('click', function(e) {{
@@ -193,26 +193,40 @@ def search_chats_by_date(db_file_path, search_date_str):
 
     message_template = "<div class='message {css_class}'>{text}<span class='metadata'><span class='time'>{time_str}</span></span></div>"
     
+    human_readable_prev_date = prev_date_obj.strftime('%B %d, %Y')
+    human_readable_next_date = next_date_obj.strftime('%B %d, %Y')
+
     conversations_html = []
     for conv in conversations_to_render:
-        prev_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['prev_messages']])
-        curr_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['current_messages']])
-        next_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['next_messages']])
+        prev_messages_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['prev_messages']])
+        curr_messages_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['current_messages']])
+        next_messages_html = "".join([message_template.format(css_class='sent' if m['from_me'] else 'received', **m) for m in conv['next_messages']])
         
-        prev_id = f"prev-{conv['slug']}"
-        next_id = f"next-{conv['slug']}"
+        prev_msg_id = f"prev-msg-{conv['slug']}"
+        next_msg_id = f"next-msg-{conv['slug']}"
+        
+        initial_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_date}</span></div>'
+        prev_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_prev_date}</span></div>' if prev_messages_html else ""
+        next_divider_html = f'<div class="day-divider"><span class="date-label">{human_readable_next_date}</span></div>' if next_messages_html else ""
 
         conv_html = f"""
         <div class="conversation_group">
             <h2>
-                <span class="day-loader {'invisible' if not prev_html else ''}" data-target="{prev_id}">«</span>
+                <span class="day-loader {'invisible' if not prev_messages_html else ''}" data-target="{prev_msg_id}">«</span>
                 {html.escape(conv['contact_name'])}
-                <span class="day-loader {'invisible' if not next_html else ''}" data-target="{next_id}">»</span>
+                <span class="day-loader {'invisible' if not next_messages_html else ''}" data-target="{next_msg_id}">»</span>
             </h2>
             <div class="conversation-container">
-                <div id="{prev_id}" class="collapsed">{prev_html}</div>
-                {curr_html}
-                <div id="{next_id}" class="collapsed">{next_html}</div>
+                <div id="{prev_msg_id}" class="collapsed">
+                    {prev_divider_html}
+                    {prev_messages_html}
+                </div>
+                {initial_divider_html}
+                {curr_messages_html}
+                <div id="{next_msg_id}" class="collapsed">
+                    {next_divider_html}
+                    {next_messages_html}
+                </div>
             </div>
         </div>"""
         conversations_html.append(conv_html)
